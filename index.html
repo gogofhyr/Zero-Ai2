@@ -510,8 +510,14 @@
             els.sendBtn.disabled = true;
             els.welcomeScreen.style.display = 'none';
 
+            // Save user message
             chat.messages.push({ role: 'user', content });
+            
+            // NEW: Create and save the AI message object immediately
+            const assistantMessage = { role: 'assistant', content: '' };
+            chat.messages.push(assistantMessage);
             saveState();
+
             renderMessage('user', content);
             scrollToBottom();
 
@@ -522,9 +528,10 @@
             els.sendBtn.classList.add('hidden');
             els.stopBtn.classList.remove('hidden');
 
+            // Exclude the empty assistant message we just pushed from the API request
             const apiMessages = [];
             if (state.settings.systemPrompt) apiMessages.push({ role: 'system', content: state.settings.systemPrompt });
-            apiMessages.push(...chat.messages.map(m => ({ role: m.role, content: m.content })));
+            apiMessages.push(...chat.messages.slice(0, -1).map(m => ({ role: m.role, content: m.content })));
 
             activeController = new AbortController();
             let fullAiResponse = "";
@@ -573,6 +580,10 @@
                             const chunkContent = data.choices[0]?.delta?.content || "";
                             fullAiResponse += chunkContent;
                             
+                            // NEW: Save the AI's response in real-time as it streams
+                            assistantMessage.content = fullAiResponse;
+                            saveState();
+                            
                             if (firstChunk) {
                                 aiProseDOM.innerHTML = ''; 
                                 firstChunk = false;
@@ -587,14 +598,15 @@
                     showError(err.message);
                     fullAiResponse += `\n\n**System Error:** ${err.message}`;
                     aiProseDOM.innerHTML = marked.parse(fullAiResponse);
+                    assistantMessage.content = fullAiResponse;
+                    saveState();
                     errorOccurred = true;
                 }
             } finally {
-                if (!firstChunk && !errorOccurred && fullAiResponse) {
-                    chat.messages.push({ role: 'assistant', content: fullAiResponse });
-                    saveState();
-                } else if (firstChunk) {
+                if (firstChunk) {
                      aiProseDOM.innerHTML = marked.parse(fullAiResponse || 'Response aborted.');
+                     assistantMessage.content = fullAiResponse || 'Response aborted.';
+                     saveState();
                 }
                 
                 els.sendBtn.classList.remove('hidden');
