@@ -298,13 +298,16 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadState();
             
-            // --- NEW: Force Clear Screen on Load ---
+            // Force Clear Screen on Load
             state.currentChatId = null; 
             
             applyTheme();
             renderChatList();
             loadCurrentChat();
             setupEventListeners();
+            
+            // Failsafe: Force a save if the user reloads or closes the page mid-stream
+            window.addEventListener('beforeunload', () => saveState());
             
             setTimeout(() => {
                 els.loading.style.opacity = '0';
@@ -318,7 +321,6 @@
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     state.chats = parsed.chats || [];
-                    // Removed loading of currentChatId to force clear screen
                     state.settings = { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) };
                     state.darkMode = parsed.darkMode ?? window.matchMedia('(prefers-color-scheme: dark)').matches;
                 } else {
@@ -380,7 +382,7 @@
         function deleteChat(id, e) {
             e.stopPropagation();
             state.chats = state.chats.filter(c => c.id !== id);
-            if (state.currentChatId === id) state.currentChatId = null; // Default to null if active chat is deleted
+            if (state.currentChatId === id) state.currentChatId = null;
             saveState();
             renderChatList();
             loadCurrentChat();
@@ -510,10 +512,9 @@
             els.sendBtn.disabled = true;
             els.welcomeScreen.style.display = 'none';
 
-            // Save user message
             chat.messages.push({ role: 'user', content });
             
-            // NEW: Create and save the AI message object immediately
+            // Create the AI message object immediately
             const assistantMessage = { role: 'assistant', content: '' };
             chat.messages.push(assistantMessage);
             saveState();
@@ -528,7 +529,6 @@
             els.sendBtn.classList.add('hidden');
             els.stopBtn.classList.remove('hidden');
 
-            // Exclude the empty assistant message we just pushed from the API request
             const apiMessages = [];
             if (state.settings.systemPrompt) apiMessages.push({ role: 'system', content: state.settings.systemPrompt });
             apiMessages.push(...chat.messages.slice(0, -1).map(m => ({ role: m.role, content: m.content })));
@@ -536,6 +536,7 @@
             activeController = new AbortController();
             let fullAiResponse = "";
             let errorOccurred = false;
+            let lastSaveTime = 0; // Timer for throttling
 
             try {
                 const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -578,18 +579,24 @@
                         try {
                             const data = JSON.parse(trimmed.slice(6));
                             const chunkContent = data.choices[0]?.delta?.content || "";
-                            fullAiResponse += chunkContent;
                             
-                            // NEW: Save the AI's response in real-time as it streams
-                            assistantMessage.content = fullAiResponse;
-                            saveState();
-                            
-                            if (firstChunk) {
-                                aiProseDOM.innerHTML = ''; 
-                                firstChunk = false;
+                            if (chunkContent) {
+                                fullAiResponse += chunkContent;
+                                assistantMessage.content = fullAiResponse;
+                                
+                                // Throttle saves to avoid choking browser storage
+                                if (Date.now() - lastSaveTime > 500) {
+                                    saveState();
+                                    lastSaveTime = Date.now();
+                                }
+                                
+                                if (firstChunk) {
+                                    aiProseDOM.innerHTML = ''; 
+                                    firstChunk = false;
+                                }
+                                aiProseDOM.innerHTML = marked.parse(fullAiResponse || '');
+                                scrollToBottom();
                             }
-                            aiProseDOM.innerHTML = marked.parse(fullAiResponse || '');
-                            scrollToBottom();
                         } catch (e) { }
                     }
                 }
@@ -597,17 +604,16 @@
                 if (err.name !== 'AbortError') {
                     showError(err.message);
                     fullAiResponse += `\n\n**System Error:** ${err.message}`;
-                    aiProseDOM.innerHTML = marked.parse(fullAiResponse);
-                    assistantMessage.content = fullAiResponse;
-                    saveState();
                     errorOccurred = true;
                 }
             } finally {
-                if (firstChunk) {
-                     aiProseDOM.innerHTML = marked.parse(fullAiResponse || 'Response aborted.');
-                     assistantMessage.content = fullAiResponse || 'Response aborted.';
-                     saveState();
+                // GUARANTEE the final text is saved properly
+                assistantMessage.content = fullAiResponse || 'Response aborted.';
+                if (!fullAiResponse || errorOccurred) {
+                    aiProseDOM.innerHTML = marked.parse(assistantMessage.content);
                 }
+                
+                saveState(); // Final forced save
                 
                 els.sendBtn.classList.remove('hidden');
                 els.stopBtn.classList.add('hidden');
